@@ -1,0 +1,117 @@
+version: '3'
+services:
+  zookeeper:
+    image: wurstmeister/zookeeper
+    ports:
+      - "2181:2181"
+
+  kafka:
+    image: wurstmeister/kafka
+    ports:
+      - "9092:9092"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_MESSAGE_MAX_BYTES: 5242880
+      KAFKA_MAX_REQUEST_SIZE: 5242880
+      KAFKA_REPLICA_FETCH_MAX_BYTES: 5242880
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_DEFAULT_REPLICATION_FACTOR: 1
+      KAFKA_MIN_INSYNC_REPLICAS: 1
+    depends_on:
+      - zookeeper
+    healthcheck:
+      test: ["CMD-SHELL", "kafka-topics.sh --bootstrap-server localhost:9092 --list"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  aerospike:
+    image: aerospike/aerospike-server
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+      - "3002:3002"
+      - "3003:3003"
+    volumes:
+      - aerospike-data:/opt/aerospike/data
+      - ./aerospike.conf:/etc/aerospike/aerospike.conf
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+        reservations:
+          memory: 4G
+    ulimits:
+      nofile:
+        soft: 1024000
+        hard: 1024000
+    sysctls:
+      - net.core.rmem_max=16777216
+      - net.core.wmem_max=16777216
+
+  aerospike-browser:
+    image: reugn/aerospike-data-browser
+    ports:
+      - "8082:8080"
+    environment:
+      - AEROSPIKE_HOST=aerospike
+      - AEROSPIKE_PORT=3000
+      - AEROSPIKE_NAMESPACE=test
+    depends_on:
+      - aerospike
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8081:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+      KAFKA_CLUSTERS_0_ZOOKEEPER: zookeeper:2181
+    depends_on:
+      - kafka
+      - zookeeper
+
+  api:
+    build:
+      context: ./api
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_BROKER=kafka:29092
+    depends_on:
+      kafka:
+        condition: service_healthy
+      aerospike:
+        condition: service_started
+
+  consumer:
+    build:
+      context: ./consumer
+      dockerfile: Dockerfile
+    environment:
+      - KAFKA_BROKER=kafka:29092
+      - CONSUMER_GROUP_ID=kyc-consumer-group
+    deploy:
+      mode: replicated
+      replicas: 3  # Default number of replicas
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+    depends_on:
+      kafka:
+        condition: service_healthy
+      aerospike:
+        condition: service_started
+
+volumes:
+  aerospike-data: 
